@@ -78,7 +78,7 @@ if (budgetCount === 0) {
 // ===== MIDDLEWARE =====
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../client')));
+app.use(express.static(path.join(__dirname, '../client/dist')));
 
 const upload = multer({
   dest: UPLOAD_DIR,
@@ -330,7 +330,7 @@ app.get('/api/stats/:month', (req, res) => {
 
 // ===== SERVE SPA =====
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/index.html'));
+  res.sendFile(path.join(__dirname, '../client/dist/index.html'));
 });
 
 app.listen(PORT, () => {
