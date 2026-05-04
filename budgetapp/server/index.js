@@ -249,7 +249,7 @@ app.post('/api/ocr', upload.single('receipt'), async (req, res) => {
       suggested_category: lookupCategory(line.name)
     }));
 
-    res.json({ lines: categorised, raw: ocrText });
+    res.json({ lines: categorised, store: parseStoreName(ocrText), raw: ocrText });
 
   } catch (err) {
     console.error('OCR error:', err);
@@ -259,6 +259,18 @@ app.post('/api/ocr', upload.single('receipt'), async (req, res) => {
     fs.unlink(processedPath, () => {});
   }
 });
+
+function parseStoreName(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length >= 3);
+  for (const line of lines) {
+    if (/^\d/.test(line)) continue;                            // starts with digit
+    if (/^(mva|total|sum|betalt|dato|kvittering|org)/i.test(line)) continue;
+    if (/^\W+$/.test(line)) continue;                         // only punctuation
+    if (line.length > 40) continue;                           // too long for a store name
+    return line.replace(/[^\w\s\-æøåÆØÅ]/g, '').trim();
+  }
+  return '';
+}
 
 function parseReceiptLines(text) {
   const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 1);
@@ -292,6 +304,39 @@ function parseReceiptLines(text) {
 
   return results;
 }
+
+// ===== BATCH IMPORT =====
+app.post('/api/transactions/import', (req, res) => {
+  const { store, date, items } = req.body;
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'No items' });
+
+  const budgetNames = {};
+  db.prepare('SELECT id, name FROM budgets').all().forEach(b => { budgetNames[b.id] = b.name; });
+
+  // Group by category_id
+  const groups = {};
+  for (const item of items) {
+    const key = item.category_id || '__none__';
+    if (!groups[key]) groups[key] = { category_id: item.category_id || null, total: 0 };
+    groups[key].total += item.amount;
+    if (item.category_id && item.name) learnMapping(item.name, item.category_id);
+  }
+
+  const insert = db.prepare(
+    'INSERT INTO transactions (id, name, amount, date, type, category_id) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  const saved = [];
+  for (const group of Object.values(groups)) {
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+    const catName = group.category_id ? budgetNames[group.category_id] : null;
+    const name = store && catName ? `${store} – ${catName}` : (store || catName || 'Receipt');
+    const amount = Math.round(group.total * 100) / 100;
+    insert.run(id, name, amount, date, 'expense', group.category_id);
+    saved.push({ id, name, amount, category_id: group.category_id });
+  }
+
+  res.json({ saved });
+});
 
 // ===== SETTINGS =====
 app.get('/api/settings', (req, res) => {

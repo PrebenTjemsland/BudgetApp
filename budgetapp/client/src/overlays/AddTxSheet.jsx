@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { today } from '../utils'
+import { today, COLORS } from '../utils'
 import Sheet from '../components/Sheet'
 
 function CatOptions({ budgets }) {
@@ -19,14 +19,19 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
   const [lineDate, setLineDate] = useState(today())
   const [lineChecked, setLineChecked] = useState([])
   const [lineCats, setLineCats] = useState([])
+  const [store, setStore] = useState('')
+  const [localBudgets, setLocalBudgets] = useState([])
+  const [newCatForm, setNewCatForm] = useState(null) // null | { name, amount, emoji }
   const fileRef = useRef()
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   useEffect(() => {
     if (!open) return
+    setLocalBudgets(budgets)
     setScanPreview(null)
     setLineItems([])
+    setNewCatForm(null)
     if (editingTxId) {
       const t = txs.find(x => x.id === editingTxId)
       if (t) {
@@ -37,8 +42,14 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
     }
     setForm({ name: '', amount: '', date: today(), type: 'expense', category_id: '', notes: '' })
     setLineDate(today())
+    setStore('')
     setMode('idle')
   }, [open, editingTxId])
+
+  // Keep localBudgets in sync if parent updates (e.g. after refresh)
+  useEffect(() => {
+    if (open) setLocalBudgets(budgets)
+  }, [budgets])
 
   async function handleScan(e) {
     const file = e.target.files?.[0]
@@ -61,6 +72,7 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
       setLineItems(data.lines)
       setLineChecked(data.lines.map(() => true))
       setLineCats(data.lines.map(l => l.suggested_category || ''))
+      setStore(data.store || '')
       setMode('lines')
     } catch {
       toast('Cannot reach server')
@@ -84,18 +96,33 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
   }
 
   async function importLines() {
-    const toSave = lineItems.filter((_, i) => lineChecked[i])
-    if (!toSave.length) { toast('Select at least one item'); return }
+    const items = lineItems
+      .map((item, i) => ({ name: item.name, amount: item.amount, category_id: lineCats[i] || null }))
+      .filter((_, i) => lineChecked[i])
+    if (!items.length) { toast('Select at least one item'); return }
     try {
-      await Promise.all(toSave.map((item, i) =>
-        api('/api/transactions', {
-          method: 'POST',
-          body: JSON.stringify({ name: item.name, amount: item.amount, date: lineDate, type: 'expense', category_id: lineCats[i] || null })
-        })
-      ))
-      toast(`Imported ${toSave.length} item${toSave.length > 1 ? 's' : ''}`)
+      const { saved } = await api('/api/transactions/import', {
+        method: 'POST',
+        body: JSON.stringify({ store, date: lineDate, items })
+      })
+      toast(`Imported ${saved.length} transaction${saved.length > 1 ? 's' : ''}`)
       onSaved()
     } catch { toast('Error saving') }
+  }
+
+  async function saveNewCat() {
+    const { name, amount, emoji } = newCatForm
+    if (!name.trim() || !amount) { toast('Fill in name and amount'); return }
+    try {
+      const { id } = await api('/api/budgets', {
+        method: 'POST',
+        body: JSON.stringify({ name: name.trim(), amount: parseFloat(amount), emoji: emoji || '💰', color: COLORS[localBudgets.length % COLORS.length] })
+      })
+      const newBudget = { id, name: name.trim(), amount: parseFloat(amount), emoji: emoji || '💰', color: COLORS[localBudgets.length % COLORS.length] }
+      setLocalBudgets(prev => [...prev, newBudget])
+      setNewCatForm(null)
+      toast(`Created "${name.trim()}"`)
+    } catch { toast('Error creating category') }
   }
 
   return (
@@ -116,9 +143,7 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
       )}
 
       {/* Preview */}
-      {scanPreview && (
-        <img src={scanPreview} alt="" className="scan-preview" />
-      )}
+      {scanPreview && <img src={scanPreview} alt="" className="scan-preview" />}
 
       {/* Spinner */}
       {mode === 'scanning' && (
@@ -131,7 +156,13 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
       {/* OCR line items */}
       {mode === 'lines' && (
         <>
-          <div className="ocr-tip">Tick the lines you want to import. Adjust categories — corrections are saved as rules.</div>
+          <div className="fg">
+            <label>Store / merchant</label>
+            <input type="text" value={store} placeholder="e.g. Rema 1000" onChange={e => setStore(e.target.value)} />
+          </div>
+
+          <div className="ocr-tip">Assign each item to a category — they'll be grouped and saved as one transaction per category.</div>
+
           {lineItems.map((item, i) => (
             <div key={i} className="li-row">
               <input
@@ -147,15 +178,49 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
                 value={lineCats[i]}
                 onChange={e => setLineCats(prev => prev.map((v, j) => j === i ? e.target.value : v))}
               >
-                <CatOptions budgets={budgets} />
+                <CatOptions budgets={localBudgets} />
               </select>
             </div>
           ))}
+
+          {/* Inline new category */}
+          {newCatForm ? (
+            <div style={{ background: 'var(--surface2)', borderRadius: 'var(--r-sm)', padding: '12px', marginTop: 12 }}>
+              <div style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 500, marginBottom: 10 }}>New category</div>
+              <div className="fr">
+                <div className="fg">
+                  <label>Name</label>
+                  <input type="text" value={newCatForm.name} placeholder="e.g. Snacks" autoFocus onChange={e => setNewCatForm(f => ({ ...f, name: e.target.value }))} />
+                </div>
+                <div className="fg">
+                  <label>Monthly budget</label>
+                  <input type="number" value={newCatForm.amount} placeholder="0" onChange={e => setNewCatForm(f => ({ ...f, amount: e.target.value }))} />
+                </div>
+              </div>
+              <div className="fg">
+                <label>Emoji</label>
+                <input type="text" value={newCatForm.emoji} placeholder="💰" maxLength={2} onChange={e => setNewCatForm(f => ({ ...f, emoji: e.target.value }))} />
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn" style={{ flex: 1 }} onClick={saveNewCat}>Save category</button>
+                <button className="btn sec" style={{ flex: 1 }} onClick={() => setNewCatForm(null)}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button
+              className="btn sec"
+              style={{ marginTop: 10 }}
+              onClick={() => setNewCatForm({ name: '', amount: '', emoji: '' })}
+            >
+              ＋ New category
+            </button>
+          )}
+
           <div className="fg" style={{ marginTop: 12 }}>
             <label>Date</label>
             <input type="date" value={lineDate} onChange={e => setLineDate(e.target.value)} />
           </div>
-          <button className="btn" onClick={importLines}>Import selected</button>
+          <button className="btn" onClick={importLines}>Import</button>
           <button className="btn sec" onClick={() => setMode('manual')}>Enter manually instead</button>
         </>
       )}
@@ -182,7 +247,7 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
             <div className="fg">
               <label>Category</label>
               <select value={form.category_id} onChange={e => set('category_id', e.target.value)}>
-                <CatOptions budgets={budgets} />
+                <CatOptions budgets={localBudgets} />
               </select>
             </div>
             <div className="fg">
