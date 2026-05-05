@@ -1,0 +1,5 @@
+node_modules/
+budgetapp/server/data/
+budgetapp/client/dist/
+.env
+*.db
