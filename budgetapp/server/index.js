@@ -4,8 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
-const tesseract = require('node-tesseract-ocr');
-const sharp = require('sharp');
+const ocrProvider = require('./ocr');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -223,27 +222,11 @@ app.post('/api/ocr', upload.single('receipt'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
   const inputPath = req.file.path;
-  const processedPath = inputPath + '_processed.png';
 
   try {
-    // Preprocess: greyscale, increase contrast, upscale for better OCR
-    await sharp(inputPath)
-      .resize({ width: 1400, withoutEnlargement: false })
-      .greyscale()
-      .normalise()
-      .sharpen({ sigma: 1.2 })
-      .png()
-      .toFile(processedPath);
-
-    const ocrText = await tesseract.recognize(processedPath, {
-      lang: 'nor+eng',   // Norwegian + English — covers Rema, Kiwi etc.
-      oem: 1,            // LSTM engine
-      psm: 6,            // Assume single uniform block of text
-    });
+    const ocrText = await ocrProvider.extractText(inputPath);
 
     const lines = parseReceiptLines(ocrText);
-
-    // Attach learned category suggestions
     const categorised = lines.map(line => ({
       ...line,
       suggested_category: lookupCategory(line.name)
@@ -253,10 +236,9 @@ app.post('/api/ocr', upload.single('receipt'), async (req, res) => {
 
   } catch (err) {
     console.error('OCR error:', err);
-    res.status(500).json({ error: err.message, detail: 'Is tesseract-ocr installed? Run: sudo apt install tesseract-ocr tesseract-ocr-nor' });
+    res.status(500).json({ error: err.message });
   } finally {
     fs.unlink(inputPath, () => {});
-    fs.unlink(processedPath, () => {});
   }
 });
 
