@@ -180,6 +180,16 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
               >
                 <CatOptions budgets={localBudgets} />
               </select>
+              <button
+                title="Always ignore this line"
+                onClick={async () => {
+                  await api('/api/exclusions', { method: 'POST', body: JSON.stringify({ pattern: item.name }) })
+                  setLineItems(prev => prev.filter((_, j) => j !== i))
+                  setLineChecked(prev => prev.filter((_, j) => j !== i))
+                  setLineCats(prev => prev.filter((_, j) => j !== i))
+                }}
+                style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 15, padding: '0 2px', flexShrink: 0 }}
+              >🚫</button>
             </div>
           ))}
 
