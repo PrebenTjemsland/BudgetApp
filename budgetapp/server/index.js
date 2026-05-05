@@ -54,6 +54,12 @@ db.exec(`
     value TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS receipt_exclusions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
   CREATE INDEX IF NOT EXISTS idx_tx_category ON transactions(category_id);
 `);
@@ -176,6 +182,23 @@ app.delete('/api/mappings/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ===== RECEIPT EXCLUSIONS =====
+app.get('/api/exclusions', (req, res) => {
+  res.json(db.prepare('SELECT * FROM receipt_exclusions ORDER BY created_at DESC').all());
+});
+
+app.post('/api/exclusions', (req, res) => {
+  const pattern = normalizeItemName(req.body.pattern || '');
+  if (pattern.length < 2) return res.status(400).json({ error: 'Pattern too short' });
+  db.prepare('INSERT OR IGNORE INTO receipt_exclusions (pattern) VALUES (?)').run(pattern);
+  res.json({ ok: true, pattern });
+});
+
+app.delete('/api/exclusions/:id', (req, res) => {
+  db.prepare('DELETE FROM receipt_exclusions WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 function learnMapping(itemName, categoryId) {
   const pattern = normalizeItemName(itemName);
   if (pattern.length < 2) return;
@@ -228,7 +251,13 @@ app.post('/api/ocr', upload.single('receipt'), async (req, res) => {
 
     console.log('\n--- RAW OCR OUTPUT ---\n' + ocrText + '\n--- END OCR OUTPUT ---\n');
 
-    const lines = parseReceiptLines(ocrText);
+    const exclusions = new Set(
+      db.prepare('SELECT pattern FROM receipt_exclusions').all().map(r => r.pattern)
+    );
+
+    const lines = parseReceiptLines(ocrText).filter(line =>
+      !exclusions.has(normalizeItemName(line.name))
+    );
     const categorised = lines.map(line => ({
       ...line,
       suggested_category: lookupCategory(line.name)
@@ -268,7 +297,7 @@ function parseReceiptLines(text) {
   const isJunkName = (l) => {
     if (/^\d/.test(l)) return true;  // starts with digit → code/total/breakdown
     if (/^[-=*]{2,}/.test(l)) return true;
-    return /^(mva|total|sum\b|bank|betalt|kort|visa|mastercard|dato|kasserer|kvittering|foretaks|org|telefon|tlf|rabatt|bonus|discount|change|cash|thank|grunnlag|totalt|trumf|terminal|authorization|contactless|godkjent|salgskvittering|bax|aid|saldo|kvitt|serie|kasse|oper|id:|du er|se bes|i digital|din |for denne|hva\b)/i.test(l);
+    return /^(mva|total|sum\b|sun\b|bank|betalt|kort|visa|mastercard|dato|kasserer|kvittering|foretaks|org|telefon|tlf|rabatt|bonus|discount|change|cash|thank|grunnlag|totalt|tr[uun]mf|tr[uun]nf|terminal|authorization|contactless|godkjent|salgskvittering|bax|aid|saldo|kvitt|serie|kasse|oper|id:|du er|se bes|i digital|din |for denne|hva\b|handel|varer\b)/i.test(l);
   };
 
   for (let i = 0; i < lines.length; i++) {
