@@ -226,6 +226,8 @@ app.post('/api/ocr', upload.single('receipt'), async (req, res) => {
   try {
     const ocrText = await ocrProvider.extractText(inputPath);
 
+    console.log('\n--- RAW OCR OUTPUT ---\n' + ocrText + '\n--- END OCR OUTPUT ---\n');
+
     const lines = parseReceiptLines(ocrText);
     const categorised = lines.map(line => ({
       ...line,
@@ -255,32 +257,64 @@ function parseStoreName(text) {
 }
 
 function parseReceiptLines(text) {
-  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 1);
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
   const results = [];
 
-  // Norwegian receipt pattern: item name followed by price
-  // Handles: "Melk 1L  24,90", "BRØD  31.50 B", "2 stk Egg  59,00", "Tempor 18,2"
-  const priceRe = /(\d{1,5}[.,]\d{1,2})\s*[BbKk]?\s*$/;
+  // Matches a line that is purely a price (possibly negative)
+  const standalonePriceRe = /^-?(\d{1,6}[.,]\d{1,2})$/;
+  // Matches a VAT-rate-only line like "25%", "0%"
+  const vatOnlyRe = /^\d+%$/;
 
-  for (const line of lines) {
-    // Skip header/footer junk
-    if (/^(mva|total|sum|betalt|kort|visa|mastercard|dato|kasserer|kvittering|org\.?nr|telefon|tlf|rabatt|bonus|discount|change|cash|receipt|thank)/i.test(line)) continue;
-    if (/^\*+$/.test(line) || /^[-=]{3,}/.test(line)) continue;
-    if (line.length < 3) continue;
+  const isJunkName = (l) => {
+    if (/^\d/.test(l)) return true;  // starts with digit → code/total/breakdown
+    if (/^[-=*]{2,}/.test(l)) return true;
+    return /^(mva|total|sum\b|bank|betalt|kort|visa|mastercard|dato|kasserer|kvittering|foretaks|org|telefon|tlf|rabatt|bonus|discount|change|cash|thank|grunnlag|totalt|trumf|terminal|authorization|contactless|godkjent|salgskvittering|bax|aid|saldo|kvitt|serie|kasse|oper|id:|du er|se bes|i digital|din |for denne|hva\b)/i.test(l);
+  };
 
-    const priceMatch = line.match(priceRe);
-    if (!priceMatch) continue;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const priceMatch = line.match(standalonePriceRe);
 
-    const rawPrice = priceMatch[1].replace(',', '.');
-    const amount = parseFloat(rawPrice);
+    if (priceMatch) {
+      // Price-on-its-own-line format (Google Vision, modern receipts)
+      const amount = parseFloat(priceMatch[1].replace(',', '.'));
+      if (isNaN(amount) || amount <= 0 || amount > 50000) continue;
+
+      // Look back up to 3 lines for the item name, skipping VAT% lines
+      let name = null;
+      for (let j = i - 1; j >= Math.max(0, i - 3); j--) {
+        const candidate = lines[j];
+        if (vatOnlyRe.test(candidate)) continue;
+        if (standalonePriceRe.test(candidate)) break;  // hit another price
+        if (isJunkName(candidate)) break;
+        name = candidate
+          .replace(/\s+\d+%\s*$/, '')  // strip trailing VAT% on same line
+          .replace(/^\+\s*/, '')        // strip leading +
+          .replace(/\.+$/, '')          // strip trailing dots
+          .replace(/^\d+\.\s*/, '')     // strip leading item number "1. "
+          .replace(/^\d+\s*[xX×]\s*/, '') // strip "2 x "
+          .replace(/^\d+\s*stk\s*/i, '')  // strip "2 stk "
+          .trim();
+        break;
+      }
+
+      if (!name || name.length < 2) continue;
+      results.push({ name, amount });
+      continue;
+    }
+
+    // Fallback: price at end of same line (older/simple receipt format)
+    const inlinePriceRe = /(\d{1,5}[.,]\d{1,2})\s*[BbKk]?\s*$/;
+    const inlineMatch = line.match(inlinePriceRe);
+    if (!inlineMatch) continue;
+    if (isJunkName(line)) continue;
+
+    const amount = parseFloat(inlineMatch[1].replace(',', '.'));
     if (isNaN(amount) || amount <= 0 || amount > 50000) continue;
 
-    // Name is everything before the price
-    let name = line.slice(0, line.lastIndexOf(priceMatch[0])).trim();
-    // Clean up leading item number "1. ", quantity "2 x ", "2 stk "
-    name = name.replace(/^\d+\.\s*/, '').replace(/^\d+\s*[xX×]\s*/, '').replace(/^\d+\s*stk\s*/i, '').trim();
+    let name = line.slice(0, line.lastIndexOf(inlineMatch[0])).trim();
+    name = name.replace(/\s+\d+%\s*$/, '').replace(/^\d+\.\s*/, '').replace(/^\d+\s*[xX×]\s*/, '').replace(/^\d+\s*stk\s*/i, '').trim();
     if (name.length < 2) continue;
-
     results.push({ name, amount });
   }
 
