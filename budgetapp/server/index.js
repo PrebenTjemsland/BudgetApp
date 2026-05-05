@@ -277,13 +277,13 @@ function parseReceiptLines(text) {
   const results = [];
 
   // Norwegian receipt pattern: item name followed by price
-  // Handles: "Melk 1L  24,90", "BRØD  31.50 B", "2 stk Egg  59,00"
-  const priceRe = /(\d{1,5}[.,]\d{2})\s*[BbKk]?\s*$/;
+  // Handles: "Melk 1L  24,90", "BRØD  31.50 B", "2 stk Egg  59,00", "Tempor 18,2"
+  const priceRe = /(\d{1,5}[.,]\d{1,2})\s*[BbKk]?\s*$/;
 
   for (const line of lines) {
     // Skip header/footer junk
-    if (/^(mva|total|sum|betalt|kort|visa|mastercard|dato|kasserer|kvittering|org\.?nr|telefon|tlf|rabatt|bonus)/i.test(line)) continue;
-    if (/^\*+$/.test(line) || /^-{3,}/.test(line)) continue;
+    if (/^(mva|total|sum|betalt|kort|visa|mastercard|dato|kasserer|kvittering|org\.?nr|telefon|tlf|rabatt|bonus|discount|change|cash|receipt|thank)/i.test(line)) continue;
+    if (/^\*+$/.test(line) || /^[-=]{3,}/.test(line)) continue;
     if (line.length < 3) continue;
 
     const priceMatch = line.match(priceRe);
@@ -295,8 +295,8 @@ function parseReceiptLines(text) {
 
     // Name is everything before the price
     let name = line.slice(0, line.lastIndexOf(priceMatch[0])).trim();
-    // Clean up quantity prefix "2 x " or "2 stk "
-    name = name.replace(/^\d+\s*[xX×]\s*/, '').replace(/^\d+\s*stk\s*/i, '').trim();
+    // Clean up leading item number "1. ", quantity "2 x ", "2 stk "
+    name = name.replace(/^\d+\.\s*/, '').replace(/^\d+\s*[xX×]\s*/, '').replace(/^\d+\s*stk\s*/i, '').trim();
     if (name.length < 2) continue;
 
     results.push({ name, amount });
