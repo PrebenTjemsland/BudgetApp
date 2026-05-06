@@ -188,3 +188,4 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);}
 
 /* Error banner */
 .err-banner{background:var(--red-dim);border:0.5px solid rgba(255,92,92,0.3);border-radius:var(--r-sm);padding:10px 13px;font-size:13px;color:var(--red);margin-bottom:12px;}
+.settings-version{color:var(--muted2);font-size:12px;text-align:center;padding:4px 0 2px;}
