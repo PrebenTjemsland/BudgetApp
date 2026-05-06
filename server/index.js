@@ -6,6 +6,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const ocr = require('./ocr');
+const { version: packageVersion } = require('./package.json');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,6 +14,9 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'budget.db');
 const RECEIPT_DIR = path.join(DATA_DIR, 'receipts');
 const OCR_PROVIDER_SETTING_KEY = 'ocr_provider';
+const APP_VERSION = (process.env.APP_VERSION || packageVersion || '').trim();
+const APP_REVISION = (process.env.APP_REVISION || '').trim();
+const APP_BUILD_DATE = (process.env.APP_BUILD_DATE || '').trim();
 
 // Ensure dirs exist
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -359,6 +363,9 @@ function buildSettingsResponse() {
   out.available_ocr_providers = ocr.listProviders();
   out.google_vision_configured = Boolean(process.env.GOOGLE_VISION_API_KEY);
   out.ollama_configured = Boolean(process.env.OLLAMA_BASE_URL);
+  out.app_version = APP_VERSION && APP_VERSION !== 'dev' ? APP_VERSION : packageVersion;
+  out.app_revision = APP_REVISION && APP_REVISION !== 'unknown' ? APP_REVISION : null;
+  out.app_build_date = APP_BUILD_DATE && APP_BUILD_DATE !== 'unknown' ? APP_BUILD_DATE : null;
 
   return out;
 }

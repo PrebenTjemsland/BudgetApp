@@ -7,6 +7,10 @@ export default function Settings({ cfg, saveSetting, api, toast }) {
     available_ocr_providers: ['tesseract', 'google', 'ollama'],
     google_vision_configured: false,
   })
+  const buildLabel = [
+    serverSettings.app_version ? `Version ${serverSettings.app_version}` : null,
+    serverSettings.app_revision ? `build ${serverSettings.app_revision.slice(0, 7)}` : null,
+  ].filter(Boolean).join(' · ')
 
   useEffect(() => {
     let ignore = false
@@ -104,6 +108,11 @@ export default function Settings({ cfg, saveSetting, api, toast }) {
           </select>
         </div>
       </div>
+      {buildLabel && (
+        <div className="settings-version">
+          {buildLabel}
+        </div>
+      )}
     </>
   )
 }
