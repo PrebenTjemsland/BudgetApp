@@ -24,7 +24,8 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
   const [receiptTotal, setReceiptTotal] = useState(null)
   const [localBudgets, setLocalBudgets] = useState([])
   const [newCatForm, setNewCatForm] = useState(null) // null | { name, amount, emoji }
-  const fileRef = useRef()
+  const cameraFileRef = useRef()
+  const libraryFileRef = useRef()
   const nextLineId = useRef(0)
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
@@ -93,6 +94,12 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
     setLineItems(prev => [...prev, createLineItem({ source: 'manual' })])
     setLineChecked(prev => [...prev, true])
     setLineCats(prev => [...prev, ''])
+  }
+
+  function openFilePicker(ref) {
+    if (!ref.current) return
+    ref.current.value = ''
+    ref.current.click()
   }
 
   async function handleScan(e) {
@@ -218,15 +225,20 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
       {/* Scan zone */}
       {mode === 'idle' && (
         <>
-          <div className="scan-zone" onClick={() => fileRef.current?.click()}>
+          <div className="scan-zone">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ display: 'block', margin: '0 auto', stroke: 'var(--muted)' }}>
               <path d="M4 8V6a2 2 0 012-2h2M4 16v2a2 2 0 002 2h2M16 4h2a2 2 0 012 2v2M16 20h2a2 2 0 002-2v-2" strokeLinecap="round" />
               <circle cx="12" cy="12" r="3" />
             </svg>
-            <p><strong>Scan receipt</strong></p>
-            <p>Photo or image file</p>
+            <p><strong>Add receipt</strong></p>
+            <p>Take a photo now or choose one from your image library later.</p>
+            <div className="scan-actions">
+              <button type="button" className="btn" onClick={() => openFilePicker(cameraFileRef)}>Take photo</button>
+              <button type="button" className="btn sec" onClick={() => openFilePicker(libraryFileRef)}>Choose image</button>
+            </div>
           </div>
-          <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleScan} />
+          <input ref={cameraFileRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleScan} />
+          <input ref={libraryFileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleScan} />
         </>
       )}
 
