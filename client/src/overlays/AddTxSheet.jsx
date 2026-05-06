@@ -41,18 +41,24 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
     name: item.name || '',
     amount: typeof item.amount === 'number' ? item.amount.toFixed(2) : (item.amount || ''),
     ignorePattern: item.ignorePattern || item.name || '',
-    source: item.source || 'ocr'
+    source: item.source || 'ocr',
+    status: item.status || 'active'
   })
+  const isLineIncluded = (item, checked) => item.status === 'active' && checked
   const selectedTotal = Math.round(lineItems.reduce((sum, item, i) => (
-    lineChecked[i] ? sum + (parseLineAmount(item.amount) || 0) : sum
+    isLineIncluded(item, lineChecked[i]) ? sum + (parseLineAmount(item.amount) || 0) : sum
   ), 0) * 100) / 100
   const selectedMatchesReceipt = receiptTotal != null && Math.abs(selectedTotal - receiptTotal) < 0.01
+  const removedCount = lineItems.filter(item => item.status === 'removed').length
+  const ignoredCount = lineItems.filter(item => item.status === 'ignored').length
 
   useEffect(() => {
     if (!open) return
     setLocalBudgets(budgets)
     setScanPreview(null)
     setLineItems([])
+    setLineChecked([])
+    setLineCats([])
     setNewCatForm(null)
     setReceiptId(null)
     setReceiptTotal(null)
@@ -79,10 +85,8 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
     setLineItems(prev => prev.map((item, i) => i === index ? { ...item, ...patch } : item))
   }
 
-  function removeLineItem(index) {
-    setLineItems(prev => prev.filter((_, i) => i !== index))
-    setLineChecked(prev => prev.filter((_, i) => i !== index))
-    setLineCats(prev => prev.filter((_, i) => i !== index))
+  function setLineStatus(index, status) {
+    setLineItems(prev => prev.map((item, i) => i === index ? { ...item, status } : item))
   }
 
   function addLineItem() {
@@ -129,6 +133,22 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
     }
   }
 
+  async function ignoreLineItem(index) {
+    const item = lineItems[index]
+    const pattern = (item?.ignorePattern || item?.name || '').trim()
+    if (!pattern) {
+      toast('Add a name before ignoring this OCR line')
+      return
+    }
+    try {
+      await api('/api/exclusions', { method: 'POST', body: JSON.stringify({ pattern }) })
+      setLineStatus(index, 'ignored')
+      toast(`Will ignore "${pattern}" in future scans`)
+    } catch {
+      toast('Could not save ignore rule')
+    }
+  }
+
   async function saveManual() {
     const { name, amount, date, type, category_id, notes } = form
     if (!name.trim() || !amount || !date) { toast('Fill in name, amount and date'); return }
@@ -155,7 +175,7 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
   async function importLines() {
     const items = lineItems
       .map((item, i) => {
-        if (!lineChecked[i]) return null
+        if (!isLineIncluded(item, lineChecked[i])) return null
         return {
           name: item.name.trim(),
           amount: parseLineAmount(item.amount),
@@ -229,7 +249,7 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
             <input type="text" value={store} placeholder="e.g. Rema 1000" onChange={e => setStore(e.target.value)} />
           </div>
 
-          <div className="ocr-tip">Review the OCR result before saving: edit names and prices, add missing items, remove mistakes, and keep category assignment in one step.</div>
+          <div className="ocr-tip">Review the OCR result before saving: edit names and prices, add missing items, and keep removed rows visible so you can see what will not be imported.</div>
 
           <div className="card" style={{ padding: '12px 16px' }}>
             <div className="card-title" style={{ marginBottom: 6 }}>Totals</div>
@@ -254,6 +274,13 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
                 Receipt total could not be read from the scan.
               </div>
             )}
+            {(removedCount || ignoredCount) ? (
+              <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 8 }}>
+                {removedCount ? `${removedCount} removed from this import.` : null}
+                {removedCount && ignoredCount ? ' ' : null}
+                {ignoredCount ? `${ignoredCount} ignored now and in future scans.` : null}
+              </div>
+            ) : null}
           </div>
 
           <button className="btn sec" onClick={addLineItem}>＋ Add missing item</button>
@@ -265,20 +292,33 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
           )}
 
           {lineItems.map((item, i) => (
-            <div key={item.id} className="li-row">
+            <div
+              key={item.id}
+              className={`li-row${item.status !== 'active' ? ' is-excluded' : ''}${item.status === 'active' && !lineChecked[i] ? ' is-unselected' : ''}`}
+            >
               <input
                 type="checkbox"
                 className="li-check"
-                checked={lineChecked[i]}
+                checked={item.status === 'active' ? lineChecked[i] : false}
+                disabled={item.status !== 'active'}
                 onChange={e => setLineChecked(prev => prev.map((v, j) => j === i ? e.target.checked : v))}
               />
               <div className="li-fields">
+                {item.status !== 'active' && (
+                  <div className={`li-status${item.status === 'ignored' ? ' ignored' : ' removed'}`}>
+                    {item.status === 'ignored' ? 'Ignored from this import and future scans' : 'Removed from this import'}
+                  </div>
+                )}
+                {item.status === 'active' && !lineChecked[i] && (
+                  <div className="li-status">Unchecked: this row will not be imported</div>
+                )}
                 <div className="li-edit-grid">
                   <input
                     className="li-name-input"
                     type="text"
                     value={item.name}
                     placeholder="Item name"
+                    disabled={item.status !== 'active'}
                     onChange={e => updateLineItem(i, { name: e.target.value })}
                   />
                   <input
@@ -288,6 +328,7 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
                     step="0.01"
                     value={item.amount}
                     placeholder="0.00"
+                    disabled={item.status !== 'active'}
                     onChange={e => updateLineItem(i, { amount: e.target.value })}
                   />
                 </div>
@@ -295,6 +336,7 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
                   <select
                     className="li-cat"
                     value={lineCats[i]}
+                    disabled={item.status !== 'active'}
                     onChange={e => setLineCats(prev => prev.map((v, j) => j === i ? e.target.value : v))}
                   >
                     <CatOptions budgets={localBudgets} />
@@ -303,18 +345,17 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
                     <button
                       type="button"
                       className="li-action"
-                      title="Remove this item"
-                      onClick={() => removeLineItem(i)}
-                    >✕</button>
+                      title={item.status === 'removed' ? 'Restore this item' : 'Remove this item from import'}
+                      disabled={item.status === 'ignored'}
+                      onClick={() => setLineStatus(i, item.status === 'removed' ? 'active' : 'removed')}
+                    >{item.status === 'removed' ? '↺' : '✕'}</button>
                     {item.source === 'ocr' && (
                       <button
                         type="button"
                         className="li-action"
-                        title="Always ignore this OCR line"
-                        onClick={async () => {
-                          await api('/api/exclusions', { method: 'POST', body: JSON.stringify({ pattern: item.ignorePattern || item.name }) })
-                          removeLineItem(i)
-                        }}
+                        title={item.status === 'ignored' ? 'Already ignored for future scans' : 'Always ignore this OCR line'}
+                        disabled={item.status === 'ignored'}
+                        onClick={() => ignoreLineItem(i)}
                       >🚫</button>
                     )}
                   </div>
