@@ -101,6 +101,8 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);}
 .scan-zone:active{border-color:var(--accent);background:var(--accent-dim);}
 .scan-zone p{color:var(--muted);font-size:14px;margin-top:6px;}
 .scan-zone p strong{color:var(--text);}
+.scan-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px;}
+.scan-actions .btn+.btn{margin-top:0;}
 .scan-preview{width:100%;max-height:160px;object-fit:contain;border-radius:var(--r-sm);margin-bottom:12px;}
 .spinner-wrap{text-align:center;padding:24px;}
 .ring{width:26px;height:26px;border:2.5px solid var(--surface2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;margin:0 auto 8px;}
