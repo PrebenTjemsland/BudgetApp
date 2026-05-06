@@ -38,7 +38,10 @@ LABEL org.opencontainers.image.title="BudgetApp" \
 ENV NODE_ENV=production \
     PORT=3000 \
     DATA_DIR=/data \
-    OCR_PROVIDER=tesseract
+    OCR_PROVIDER=tesseract \
+    APP_VERSION=${VERSION} \
+    APP_REVISION=${VCS_REF} \
+    APP_BUILD_DATE=${BUILD_DATE}
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-nor \
