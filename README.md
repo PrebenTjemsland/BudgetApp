@@ -1,173 +1,186 @@
-# Budget App — Self-hosted setup
+# Budget App
+
+Self-hosted budget tracker with a React/Vite frontend, an Express + SQLite backend, and OCR support for receipt imports.
 
 ## Stack
-- **Backend**: Node.js + Express, SQLite (via better-sqlite3), Tesseract OCR
-- **Frontend**: Vanilla JS PWA, served by the same Express server
-- **No cloud, no accounts, no API keys required**
 
----
+- **Frontend**: React + Vite
+- **Backend**: Node.js + Express
+- **Storage**: SQLite via `better-sqlite3`
+- **OCR**: Tesseract by default, with optional Google Vision or Ollama providers
 
-## Server setup (Ubuntu/Debian)
+## Docker quick start
 
-### 1. Install system dependencies
+Build and run with Docker Compose:
+
+```bash
+mkdir -p data
+docker compose up --build
+```
+
+Then open:
+
+```bash
+http://localhost:3000
+```
+
+The app stores SQLite data in `./data` on your machine.
+
+If you want to stop it:
+
+```bash
+docker compose down
+```
+
+If you want to see logs:
+
+```bash
+docker compose logs -f
+```
+
+You can still build the image directly if you want:
+
+```bash
+docker build -t budgetapp:dev .
+```
+
+## Publish to GitHub Container Registry
+
+This repo now includes `.github/workflows/publish-image.yml`, which publishes the Docker image to GHCR on:
+
+- pushes to `main`
+- tags matching `v*`
+- manual workflow dispatch
+
+Published image names follow this repo, for example:
+
+```text
+ghcr.io/prebentjemsland/budgetapp:main
+ghcr.io/prebentjemsland/budgetapp:sha-<commit>
+ghcr.io/prebentjemsland/budgetapp:latest
+```
+
+To publish manually from your machine instead of using Actions:
+
+```bash
+docker build -t budgetapp:dev .
+docker tag budgetapp:dev ghcr.io/prebentjemsland/budgetapp:dev
+echo "$GHCR_TOKEN" | docker login ghcr.io -u PrebenTjemsland --password-stdin
+docker push ghcr.io/prebentjemsland/budgetapp:dev
+```
+
+`GHCR_TOKEN` needs `write:packages`.
+
+## Run on the server with Docker Compose
+
+The included `compose.yaml` can also use an image from a registry on the server.
+
+```bash
+mkdir -p data
+export BUDGETAPP_IMAGE=ghcr.io/prebentjemsland/budgetapp:main
+docker compose pull
+docker compose up -d
+```
+
+Default runtime settings:
+
+- Container port: `3000`
+- Mounted data directory: `./data -> /data`
+- Default OCR provider: `tesseract`
+
+Useful overrides:
+
+```bash
+export HOST_PORT=3001
+export OCR_PROVIDER=ollama
+export OLLAMA_BASE_URL=http://host.docker.internal:11434
+docker compose up -d
+```
+
+If you use Tailscale, open the app from your phone with the server's Tailscale IP or MagicDNS name.
+
+## Secrets and Google Vision
+
+Do **not** bake API keys into the Docker image, and do **not** store them in app settings. Keep secrets on the server as environment variables.
+
+If you already use a `.env` file with Docker Compose, that fits this app well. The existing `compose.yaml` passes `GOOGLE_VISION_API_KEY` through to the container when it is present in your server-side `.env` file.
+
+Example server `.env`:
+
+```bash
+BUDGETAPP_IMAGE=ghcr.io/prebentjemsland/budgetapp:main
+HOST_PORT=3000
+OCR_PROVIDER=tesseract
+GOOGLE_VISION_API_KEY=your_real_key_here
+```
+
+Then redeploy:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+After that, you can switch the OCR provider to **Google Vision** from the app's Settings page. The app stores only the provider choice; the key remains in container env on the server.
+
+## Native run without Docker
+
+If you want to keep developing directly on your machine:
+
+```bash
+cd client
+npm ci
+npm run build
+
+cd ../server
+npm ci
+OCR_PROVIDER=tesseract node index.js
+```
+
+Install Tesseract first on the host:
 
 ```bash
 sudo apt update
 sudo apt install -y tesseract-ocr tesseract-ocr-nor tesseract-ocr-eng
-# Verify:
-tesseract --version
 ```
 
-### 2. Install Node.js (if not already)
+## OCR providers
+
+- `tesseract` - fully local, default
+- `google` - requires `GOOGLE_VISION_API_KEY`
+- `ollama` - requires an Ollama server with a vision-capable model
+
+Relevant environment variables:
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
+OCR_PROVIDER=tesseract
+GOOGLE_VISION_API_KEY=...
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2-vl:7b
+DATA_DIR=/data
+PORT=3000
 ```
-
-### 3. Copy app files to server
-
-```bash
-scp -r budgetapp/ user@your-server:~/budgetapp
-```
-
-Or clone/copy however you prefer. The structure should be:
-```
-budgetapp/
-  server/
-    index.js
-    package.json
-  client/
-    index.html
-    manifest.json
-    icon.png     ← add a 512x512 PNG yourself, or leave out
-```
-
-### 4. Install Node dependencies
-
-```bash
-cd ~/budgetapp/server
-npm install
-```
-
-### 5. Run the server
-
-```bash
-node index.js
-# Runs on port 3000 by default
-```
-
-To change port or data dir:
-```bash
-PORT=8080 DATA_DIR=/mnt/data/budget node index.js
-```
-
----
-
-## Run as a service (systemd)
-
-```bash
-sudo nano /etc/systemd/system/budget.service
-```
-
-```ini
-[Unit]
-Description=Budget App
-After=network.target
-
-[Service]
-Type=simple
-User=YOUR_USER
-WorkingDirectory=/home/YOUR_USER/budgetapp/server
-ExecStart=/usr/bin/node index.js
-Restart=on-failure
-Environment=PORT=3000
-Environment=DATA_DIR=/home/YOUR_USER/budgetapp/data
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable budget
-sudo systemctl start budget
-sudo systemctl status budget
-```
-
----
-
-## Nginx reverse proxy (recommended — lets you use a clean local domain)
-
-```nginx
-server {
-    listen 80;
-    server_name budget.local;   # or your server's LAN IP
-
-    client_max_body_size 20M;   # for receipt uploads
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-Then on your router/Pi-hole/local DNS, point `budget.local` to your server IP.
-
----
-
-## iPhone setup (no App Store needed)
-
-1. Make sure your iPhone is on the same WiFi as the server
-2. Open Safari → go to `http://YOUR_SERVER_IP:3000`
-3. Go to Settings in the app → enter server URL: `http://YOUR_SERVER_IP:3000`
-4. Tap the Share button → **Add to Home Screen**
-5. Done — it opens like a native app
-
-If you set up Nginx with a local domain you can use that URL instead.
-
----
-
-## OCR accuracy tips
-
-- **Lighting matters most** — flat, even light, no shadows across the receipt
-- **Straighten the receipt** before shooting — Tesseract handles slight rotation but not much
-- Sharp image preprocessing is already applied (greyscale → normalise → sharpen → upscale to 1400px)
-- Norwegian receipts work well with the `nor+eng` language pack included
-- Items that don't parse cleanly can always be entered manually, and will still teach the category mapping
-
-## Item → Category learning
-
-Every time you categorise a transaction (whether imported from OCR or manual):
-- The item name is normalised (lowercased, quantity/price stripped)
-- Saved to the `item_category_map` table
-- Next time the same or similar item appears, the category is pre-selected
-- You can view and edit all rules in the **Rules** tab
-- Hit count shows how many times each rule has fired
-
----
 
 ## Data location
 
-By default: `budgetapp/server/data/`
-- `budget.db` — all your data (SQLite, single file, easy to back up)
-- `uploads/` — temp folder, receipt images are deleted after OCR
+- **Docker**: `/data/budget.db`
+- **Native run**: `server/data/budget.db`
+- **Saved receipt images**: `/data/receipts/` in Docker, `server/data/receipts/` for native runs
 
-Back up just `budget.db` and you have everything.
+Back up `budget.db` together with the `receipts/` directory if you want to preserve linked source receipt images.
 
----
+## iPhone / PWA install
 
-## Optional: Tailscale for access away from home
+1. Open the app URL in Safari.
+2. Tap **Share**.
+3. Tap **Add to Home Screen**.
 
-```bash
-# On server
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
+## OCR tips
 
-# Get your Tailscale IP:
-tailscale ip -4
-```
+- Use even lighting and keep the receipt as flat as possible.
+- Norwegian receipts work best with the bundled `nor+eng` language packs.
+- Imported items can always be corrected manually if OCR misses something.
 
-Then in the app Settings, change the server URL to your Tailscale IP. Works from anywhere with no port forwarding.
+## Item-to-category learning
+
+When you categorise a transaction, the normalised item name is saved in `item_category_map`. Future imports use that rule to pre-select a category, and you can manage the rules from the **Rules** tab.
