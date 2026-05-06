@@ -20,11 +20,33 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
   const [lineChecked, setLineChecked] = useState([])
   const [lineCats, setLineCats] = useState([])
   const [store, setStore] = useState('')
+  const [receiptId, setReceiptId] = useState(null)
+  const [receiptTotal, setReceiptTotal] = useState(null)
   const [localBudgets, setLocalBudgets] = useState([])
   const [newCatForm, setNewCatForm] = useState(null) // null | { name, amount, emoji }
   const fileRef = useRef()
+  const nextLineId = useRef(0)
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+  const formatAmount = (amount) => `${cfg.currency} ${amount.toFixed(2)}`
+  const parseLineAmount = (value) => {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null
+    const normalized = String(value || '').trim().replace(',', '.')
+    if (!normalized) return null
+    const amount = parseFloat(normalized)
+    return Number.isFinite(amount) ? amount : null
+  }
+  const createLineItem = (item = {}) => ({
+    id: `line-${nextLineId.current++}`,
+    name: item.name || '',
+    amount: typeof item.amount === 'number' ? item.amount.toFixed(2) : (item.amount || ''),
+    ignorePattern: item.ignorePattern || item.name || '',
+    source: item.source || 'ocr'
+  })
+  const selectedTotal = Math.round(lineItems.reduce((sum, item, i) => (
+    lineChecked[i] ? sum + (parseLineAmount(item.amount) || 0) : sum
+  ), 0) * 100) / 100
+  const selectedMatchesReceipt = receiptTotal != null && Math.abs(selectedTotal - receiptTotal) < 0.01
 
   useEffect(() => {
     if (!open) return
@@ -32,6 +54,8 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
     setScanPreview(null)
     setLineItems([])
     setNewCatForm(null)
+    setReceiptId(null)
+    setReceiptTotal(null)
     if (editingTxId) {
       const t = txs.find(x => x.id === editingTxId)
       if (t) {
@@ -51,6 +75,22 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
     if (open) setLocalBudgets(budgets)
   }, [budgets])
 
+  function updateLineItem(index, patch) {
+    setLineItems(prev => prev.map((item, i) => i === index ? { ...item, ...patch } : item))
+  }
+
+  function removeLineItem(index) {
+    setLineItems(prev => prev.filter((_, i) => i !== index))
+    setLineChecked(prev => prev.filter((_, i) => i !== index))
+    setLineCats(prev => prev.filter((_, i) => i !== index))
+  }
+
+  function addLineItem() {
+    setLineItems(prev => [...prev, createLineItem({ source: 'manual' })])
+    setLineChecked(prev => [...prev, true])
+    setLineCats(prev => [...prev, ''])
+  }
+
   async function handleScan(e) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -58,21 +98,30 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
     reader.onload = ev => setScanPreview(ev.target.result)
     reader.readAsDataURL(file)
     setMode('scanning')
+    setReceiptId(null)
+    setReceiptTotal(null)
     try {
       const formData = new FormData()
       formData.append('receipt', file)
       const base = (cfg.serverUrl || '').replace(/\/$/, '')
       const res = await fetch(base + '/api/ocr', { method: 'POST', body: formData })
       const data = await res.json()
-      if (!res.ok || !data.lines?.length) {
+      if (!res.ok) {
+        setReceiptId(data.receipt_id || null)
+        setReceiptTotal(typeof data.receipt_total === 'number' ? data.receipt_total : null)
+        setStore(data.store || '')
         toast(data.error || 'No items found — try manual entry')
         setMode('manual')
         return
       }
-      setLineItems(data.lines)
-      setLineChecked(data.lines.map(() => true))
-      setLineCats(data.lines.map(l => l.suggested_category || ''))
+      const scannedItems = (data.lines || []).map(line => createLineItem(line))
+      setReceiptId(data.receipt_id || null)
+      setReceiptTotal(typeof data.receipt_total === 'number' ? data.receipt_total : null)
+      setLineItems(scannedItems)
+      setLineChecked(scannedItems.map(() => true))
+      setLineCats((data.lines || []).map(l => l.suggested_category || ''))
       setStore(data.store || '')
+      if (!scannedItems.length) toast('No items found — add them manually below')
       setMode('lines')
     } catch {
       toast('Cannot reach server')
@@ -83,7 +132,15 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
   async function saveManual() {
     const { name, amount, date, type, category_id, notes } = form
     if (!name.trim() || !amount || !date) { toast('Fill in name, amount and date'); return }
-    const payload = { name: name.trim(), amount: parseFloat(amount), date, type, category_id: category_id || null, notes: notes.trim() || null }
+    const payload = {
+      name: name.trim(),
+      amount: parseFloat(amount),
+      date,
+      type,
+      category_id: category_id || null,
+      notes: notes.trim() || null,
+      receipt_id: editingTxId ? undefined : (receiptId || null)
+    }
     try {
       if (editingTxId) {
         await api('/api/transactions/' + editingTxId, { method: 'PUT', body: JSON.stringify(payload) })
@@ -97,13 +154,24 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
 
   async function importLines() {
     const items = lineItems
-      .map((item, i) => ({ name: item.name, amount: item.amount, category_id: lineCats[i] || null }))
-      .filter((_, i) => lineChecked[i])
+      .map((item, i) => {
+        if (!lineChecked[i]) return null
+        return {
+          name: item.name.trim(),
+          amount: parseLineAmount(item.amount),
+          category_id: lineCats[i] || null
+        }
+      })
+      .filter(Boolean)
     if (!items.length) { toast('Select at least one item'); return }
+    if (items.some(item => !item.name || item.amount == null || item.amount <= 0)) {
+      toast('Fill in name and amount for selected items')
+      return
+    }
     try {
       const { saved } = await api('/api/transactions/import', {
         method: 'POST',
-        body: JSON.stringify({ store, date: lineDate, items })
+        body: JSON.stringify({ store, date: lineDate, items, receipt_id: receiptId })
       })
       toast(`Imported ${saved.length} transaction${saved.length > 1 ? 's' : ''}`)
       onSaved()
@@ -161,35 +229,97 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
             <input type="text" value={store} placeholder="e.g. Rema 1000" onChange={e => setStore(e.target.value)} />
           </div>
 
-          <div className="ocr-tip">Assign each item to a category — they'll be grouped and saved as one transaction per category.</div>
+          <div className="ocr-tip">Review the OCR result before saving: edit names and prices, add missing items, remove mistakes, and keep category assignment in one step.</div>
+
+          <div className="card" style={{ padding: '12px 16px' }}>
+            <div className="card-title" style={{ marginBottom: 6 }}>Totals</div>
+            <div className="tx-row" style={{ cursor: 'default', borderBottom: receiptTotal != null ? undefined : 'none' }}>
+              <span style={{ color: 'var(--muted)', fontSize: 13, minWidth: 96 }}>Selected items</span>
+              <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)' }}>{formatAmount(selectedTotal)}</span>
+            </div>
+            {receiptTotal != null ? (
+              <>
+                <div className="tx-row" style={{ cursor: 'default', borderBottom: 'none' }}>
+                  <span style={{ color: 'var(--muted)', fontSize: 13, minWidth: 96 }}>Receipt total</span>
+                  <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)' }}>{formatAmount(receiptTotal)}</span>
+                </div>
+                <div style={{ color: selectedMatchesReceipt ? 'var(--green)' : 'var(--amber)', fontSize: 12, fontWeight: 500, marginTop: 8 }}>
+                  {selectedMatchesReceipt
+                    ? 'Selected items match the scanned receipt total.'
+                    : `${formatAmount(Math.abs(receiptTotal - selectedTotal))} difference between selected items and receipt total.`}
+                </div>
+              </>
+            ) : (
+              <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 8 }}>
+                Receipt total could not be read from the scan.
+              </div>
+            )}
+          </div>
+
+          <button className="btn sec" onClick={addLineItem}>＋ Add missing item</button>
+
+          {!lineItems.length && (
+            <div className="empty" style={{ padding: '18px 0 8px' }}>
+              <p>No OCR items yet. Add the missing receipt items manually below.</p>
+            </div>
+          )}
 
           {lineItems.map((item, i) => (
-            <div key={i} className="li-row">
+            <div key={item.id} className="li-row">
               <input
                 type="checkbox"
                 className="li-check"
                 checked={lineChecked[i]}
                 onChange={e => setLineChecked(prev => prev.map((v, j) => j === i ? e.target.checked : v))}
               />
-              <span className="li-name" title={item.name}>{item.name}</span>
-              <span className="li-amt">{cfg.currency} {item.amount.toFixed(2)}</span>
-              <select
-                className="li-cat"
-                value={lineCats[i]}
-                onChange={e => setLineCats(prev => prev.map((v, j) => j === i ? e.target.value : v))}
-              >
-                <CatOptions budgets={localBudgets} />
-              </select>
-              <button
-                title="Always ignore this line"
-                onClick={async () => {
-                  await api('/api/exclusions', { method: 'POST', body: JSON.stringify({ pattern: item.name }) })
-                  setLineItems(prev => prev.filter((_, j) => j !== i))
-                  setLineChecked(prev => prev.filter((_, j) => j !== i))
-                  setLineCats(prev => prev.filter((_, j) => j !== i))
-                }}
-                style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 15, padding: '0 2px', flexShrink: 0 }}
-              >🚫</button>
+              <div className="li-fields">
+                <div className="li-edit-grid">
+                  <input
+                    className="li-name-input"
+                    type="text"
+                    value={item.name}
+                    placeholder="Item name"
+                    onChange={e => updateLineItem(i, { name: e.target.value })}
+                  />
+                  <input
+                    className="li-amt-input"
+                    type="number"
+                    inputMode="decimal"
+                    step="0.01"
+                    value={item.amount}
+                    placeholder="0.00"
+                    onChange={e => updateLineItem(i, { amount: e.target.value })}
+                  />
+                </div>
+                <div className="li-bottom">
+                  <select
+                    className="li-cat"
+                    value={lineCats[i]}
+                    onChange={e => setLineCats(prev => prev.map((v, j) => j === i ? e.target.value : v))}
+                  >
+                    <CatOptions budgets={localBudgets} />
+                  </select>
+                  <div className="li-actions">
+                    <button
+                      type="button"
+                      className="li-action"
+                      title="Remove this item"
+                      onClick={() => removeLineItem(i)}
+                    >✕</button>
+                    {item.source === 'ocr' && (
+                      <button
+                        type="button"
+                        className="li-action"
+                        title="Always ignore this OCR line"
+                        onClick={async () => {
+                          await api('/api/exclusions', { method: 'POST', body: JSON.stringify({ pattern: item.ignorePattern || item.name }) })
+                          removeLineItem(i)
+                        }}
+                      >🚫</button>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           ))}
 
@@ -239,6 +369,12 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
       {(mode === 'idle' || mode === 'manual') && (
         <>
           {mode === 'idle' && <div style={{ height: 4 }} />}
+          {receiptTotal != null && (
+            <div className="card" style={{ padding: '12px 16px' }}>
+              <div className="card-title" style={{ marginBottom: 6 }}>Receipt total</div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 500 }}>{formatAmount(receiptTotal)}</div>
+            </div>
+          )}
           <div className="fr">
             <div className="fg">
               <label>Amount</label>

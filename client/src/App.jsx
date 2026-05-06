@@ -185,6 +185,7 @@ export default function App() {
         txId={detailTxId}
         txs={cache.txs}
         budgets={cache.budgets}
+        cfg={cfg}
         fmt={fmtC}
         api={api}
         toast={toast}

@@ -3,21 +3,33 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
-const ocrProvider = require('./ocr');
+const ocr = require('./ocr');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'budget.db');
-const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+const RECEIPT_DIR = path.join(DATA_DIR, 'receipts');
+const OCR_PROVIDER_SETTING_KEY = 'ocr_provider';
 
 // Ensure dirs exist
 fs.mkdirSync(DATA_DIR, { recursive: true });
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(RECEIPT_DIR, { recursive: true });
 
 // ===== DATABASE SETUP =====
 const db = new Database(DB_PATH);
+
+function tableHasColumn(tableName, columnName) {
+  return db.prepare(`PRAGMA table_info(${tableName})`).all().some(col => col.name === columnName);
+}
+
+function ensureColumn(tableName, columnName, definition) {
+  if (!tableHasColumn(tableName, columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS transactions (
@@ -60,9 +72,23 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS receipts (
+    id TEXT PRIMARY KEY,
+    store TEXT,
+    ocr_text TEXT,
+    image_path TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    original_filename TEXT,
+    ocr_provider TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
   CREATE INDEX IF NOT EXISTS idx_tx_category ON transactions(category_id);
 `);
+
+ensureColumn('transactions', 'receipt_id', 'TEXT');
+db.exec('CREATE INDEX IF NOT EXISTS idx_tx_receipt ON transactions(receipt_id);');
 
 // Seed default budgets if empty
 const budgetCount = db.prepare('SELECT COUNT(*) as c FROM budgets').get().c;
@@ -86,7 +112,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '../client/dist')));
 
 const upload = multer({
-  dest: UPLOAD_DIR,
+  dest: RECEIPT_DIR,
   limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) cb(null, true);
@@ -106,12 +132,14 @@ app.get('/api/transactions', (req, res) => {
 });
 
 app.post('/api/transactions', (req, res) => {
-  const { id, name, amount, date, type, category_id, notes } = req.body;
+  const { id, name, amount, date, type, category_id, notes, receipt_id } = req.body;
   const txId = id || Date.now().toString();
+  const receiptId = resolveReceiptId(receipt_id);
+  if (receipt_id && !receiptId) return res.status(400).json({ error: 'Unknown receipt' });
   db.prepare(`
-    INSERT OR REPLACE INTO transactions (id, name, amount, date, type, category_id, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(txId, name, amount, date, type || 'expense', category_id || null, notes || null);
+    INSERT OR REPLACE INTO transactions (id, name, amount, date, type, category_id, notes, receipt_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(txId, name, amount, date, type || 'expense', category_id || null, notes || null, receiptId);
 
   // If category assigned, update the item→category map
   if (category_id && name) {
@@ -199,6 +227,74 @@ app.delete('/api/exclusions/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+function createReceiptRecord(file, ocrText, store, provider) {
+  const id = crypto.randomUUID();
+  const relativePath = path.join('receipts', path.basename(file.path));
+
+  db.prepare(`
+    INSERT INTO receipts (id, store, ocr_text, image_path, mime_type, original_filename, ocr_provider)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    store || null,
+    ocrText,
+    relativePath,
+    file.mimetype,
+    file.originalname || null,
+    provider
+  );
+
+  return getReceiptById(id);
+}
+
+function getReceiptById(id) {
+  return db.prepare('SELECT * FROM receipts WHERE id=?').get(id);
+}
+
+function resolveReceiptId(receiptId) {
+  if (!receiptId) return null;
+  return getReceiptById(receiptId)?.id || null;
+}
+
+function serialiseReceipt(receipt) {
+  if (!receipt) return null;
+  return {
+    id: receipt.id,
+    store: receipt.store,
+    ocr_text: receipt.ocr_text,
+    mime_type: receipt.mime_type,
+    original_filename: receipt.original_filename,
+    ocr_provider: receipt.ocr_provider,
+    created_at: receipt.created_at,
+    image_url: `/api/receipts/${receipt.id}/image`,
+  };
+}
+
+function getReceiptImagePath(receipt) {
+  const fullPath = path.resolve(DATA_DIR, receipt.image_path);
+  if (!fullPath.startsWith(RECEIPT_DIR + path.sep)) return null;
+  return fullPath;
+}
+
+app.get('/api/receipts/:id', (req, res) => {
+  const receipt = getReceiptById(req.params.id);
+  if (!receipt) return res.status(404).json({ error: 'Receipt not found' });
+  res.json(serialiseReceipt(receipt));
+});
+
+app.get('/api/receipts/:id/image', (req, res) => {
+  const receipt = getReceiptById(req.params.id);
+  if (!receipt) return res.status(404).json({ error: 'Receipt not found' });
+
+  const imagePath = getReceiptImagePath(receipt);
+  if (!imagePath || !fs.existsSync(imagePath)) {
+    return res.status(404).json({ error: 'Receipt image not found' });
+  }
+
+  res.type(receipt.mime_type);
+  res.sendFile(imagePath);
+});
+
 function learnMapping(itemName, categoryId) {
   const pattern = normalizeItemName(itemName);
   if (pattern.length < 2) return;
@@ -240,6 +336,33 @@ function lookupCategory(itemName) {
   return null;
 }
 
+function getSettingValue(key) {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  return row?.value ?? null;
+}
+
+function getCurrentOcrProvider() {
+  const configured = getSettingValue(OCR_PROVIDER_SETTING_KEY) || ocr.defaultProvider;
+  try {
+    return ocr.normalizeProviderName(configured);
+  } catch {
+    return ocr.defaultProvider;
+  }
+}
+
+function buildSettingsResponse() {
+  const rows = db.prepare('SELECT key, value FROM settings').all();
+  const out = {};
+  rows.forEach(r => out[r.key] = r.value);
+
+  out.ocr_provider = getCurrentOcrProvider();
+  out.available_ocr_providers = ocr.listProviders();
+  out.google_vision_configured = Boolean(process.env.GOOGLE_VISION_API_KEY);
+  out.ollama_configured = Boolean(process.env.OLLAMA_BASE_URL);
+
+  return out;
+}
+
 // ===== OCR =====
 app.post('/api/ocr', upload.single('receipt'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -247,10 +370,14 @@ app.post('/api/ocr', upload.single('receipt'), async (req, res) => {
   const inputPath = req.file.path;
 
   try {
-    const ocrText = await ocrProvider.extractText(inputPath);
+    const provider = getCurrentOcrProvider();
+    const ocrText = await ocr.extractText(inputPath, provider);
 
     console.log('\n--- RAW OCR OUTPUT ---\n' + ocrText + '\n--- END OCR OUTPUT ---\n');
 
+    const store = parseStoreName(ocrText);
+    const receiptTotal = parseReceiptTotal(ocrText);
+    const receipt = createReceiptRecord(req.file, ocrText, store, provider);
     const exclusions = new Set(
       db.prepare('SELECT pattern FROM receipt_exclusions').all().map(r => r.pattern)
     );
@@ -263,13 +390,19 @@ app.post('/api/ocr', upload.single('receipt'), async (req, res) => {
       suggested_category: lookupCategory(line.name)
     }));
 
-    res.json({ lines: categorised, store: parseStoreName(ocrText), raw: ocrText });
+    res.json({
+      receipt_id: receipt.id,
+      receipt: serialiseReceipt(receipt),
+      receipt_total: receiptTotal,
+      lines: categorised,
+      store,
+      raw: ocrText
+    });
 
   } catch (err) {
+    fs.unlink(inputPath, () => {});
     console.error('OCR error:', err);
     res.status(500).json({ error: err.message });
-  } finally {
-    fs.unlink(inputPath, () => {});
   }
 });
 
@@ -283,6 +416,41 @@ function parseStoreName(text) {
     return line.replace(/[^\w\s\-æøåÆØÅ]/g, '').trim();
   }
   return '';
+}
+
+function parseReceiptTotal(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const totalLabelRe = /\b(total|totalt|sum(?:me)?|sun\b|å betale|a betale|betalt|beløp|belop|to pay|amount due)\b/i;
+  const blockedRe = /\b(mva|vat|grunnlag|rabatt|discount|bonus|change|cash|bank|visa|mastercard|kort|saldo|tr[uun]mf|tr[uun]nf)\b/i;
+  const amountRe = /-?\d{1,6}[.,]\d{1,2}/g;
+  const standaloneAmountRe = /^(?:kr|nok)?\s*(-?\d{1,6}[.,]\d{1,2})(?:\s*(?:kr|nok))?$/i;
+
+  const parseLastAmount = (line) => {
+    const matches = line.match(amountRe);
+    if (!matches?.length) return null;
+    const amount = parseFloat(matches[matches.length - 1].replace(',', '.'));
+    if (isNaN(amount) || amount <= 0 || amount > 50000) return null;
+    return amount;
+  };
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (blockedRe.test(line) || !totalLabelRe.test(line)) continue;
+
+    const inlineAmount = parseLastAmount(line);
+    if (inlineAmount !== null) return inlineAmount;
+
+    const nextLine = lines[i + 1];
+    if (!nextLine || blockedRe.test(nextLine)) continue;
+
+    const standaloneMatch = nextLine.match(standaloneAmountRe);
+    if (!standaloneMatch) continue;
+
+    const amount = parseFloat(standaloneMatch[1].replace(',', '.'));
+    if (!isNaN(amount) && amount > 0 && amount <= 50000) return amount;
+  }
+
+  return null;
 }
 
 function parseReceiptLines(text) {
@@ -352,8 +520,10 @@ function parseReceiptLines(text) {
 
 // ===== BATCH IMPORT =====
 app.post('/api/transactions/import', (req, res) => {
-  const { store, date, items } = req.body;
+  const { store, date, items, receipt_id } = req.body;
   if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'No items' });
+  const receiptId = resolveReceiptId(receipt_id);
+  if (receipt_id && !receiptId) return res.status(400).json({ error: 'Unknown receipt' });
 
   const budgetNames = {};
   db.prepare('SELECT id, name FROM budgets').all().forEach(b => { budgetNames[b.id] = b.name; });
@@ -368,7 +538,7 @@ app.post('/api/transactions/import', (req, res) => {
   }
 
   const insert = db.prepare(
-    'INSERT INTO transactions (id, name, amount, date, type, category_id) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT INTO transactions (id, name, amount, date, type, category_id, receipt_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
   );
   const saved = [];
   for (const group of Object.values(groups)) {
@@ -376,8 +546,8 @@ app.post('/api/transactions/import', (req, res) => {
     const catName = group.category_id ? budgetNames[group.category_id] : null;
     const name = store && catName ? `${store} – ${catName}` : (store || catName || 'Receipt');
     const amount = Math.round(group.total * 100) / 100;
-    insert.run(id, name, amount, date, 'expense', group.category_id);
-    saved.push({ id, name, amount, category_id: group.category_id });
+    insert.run(id, name, amount, date, 'expense', group.category_id, receiptId);
+    saved.push({ id, name, amount, category_id: group.category_id, receipt_id: receiptId });
   }
 
   res.json({ saved });
@@ -385,16 +555,19 @@ app.post('/api/transactions/import', (req, res) => {
 
 // ===== SETTINGS =====
 app.get('/api/settings', (req, res) => {
-  const rows = db.prepare('SELECT key, value FROM settings').all();
-  const out = {};
-  rows.forEach(r => out[r.key] = r.value);
-  res.json(out);
+  res.json(buildSettingsResponse());
 });
 
 app.post('/api/settings', (req, res) => {
   const stmt = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
-  Object.entries(req.body).forEach(([k, v]) => stmt.run(k, v));
-  res.json({ ok: true });
+  for (const [key, value] of Object.entries(req.body)) {
+    if (key === OCR_PROVIDER_SETTING_KEY) {
+      stmt.run(key, ocr.normalizeProviderName(value));
+      continue;
+    }
+    stmt.run(key, value);
+  }
+  res.json({ ok: true, settings: buildSettingsResponse() });
 });
 
 // ===== STATS =====
