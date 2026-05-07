@@ -439,7 +439,7 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
             </div>
           </div>
           <div className="fg">
-            <label>Description</label>
+            <label>Name</label>
             <input type="text" value={form.name} placeholder="e.g. Rema 1000" onChange={e => set('name', e.target.value)} />
           </div>
           <div className="fr">
@@ -458,8 +458,8 @@ export default function AddTxSheet({ open, editingTxId, budgets, txs, cfg, api, 
             </div>
           </div>
           <div className="fg">
-            <label>Notes (optional)</label>
-            <input type="text" value={form.notes} onChange={e => set('notes', e.target.value)} />
+            <label>Description (optional)</label>
+            <input type="text" value={form.notes} placeholder="Add extra context" onChange={e => set('notes', e.target.value)} />
           </div>
           <button className="btn" onClick={saveManual}>Save</button>
         </>
