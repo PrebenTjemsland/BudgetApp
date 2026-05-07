@@ -70,7 +70,7 @@ export default function TxDetailSheet({ open, txId, txs, budgets, cfg, fmt, api,
               </div>
               {tx.notes && (
                 <div className="tx-row" style={{ cursor: 'default', borderBottom: tx.receipt_id ? undefined : 'none' }}>
-                  <span style={{ color: 'var(--muted)', fontSize: 13, minWidth: 90 }}>Notes</span>
+                  <span style={{ color: 'var(--muted)', fontSize: 13, minWidth: 90 }}>Description</span>
                   <span>{tx.notes}</span>
                 </div>
               )}
