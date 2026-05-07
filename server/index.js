@@ -665,7 +665,7 @@ app.get('/api/stats/:month', (req, res) => {
 });
 
 // ===== SERVE SPA =====
-app.get('*', (req, res) => {
+app.get('/{*path}', (req, res) => {
   res.sendFile(path.join(__dirname, '../client/dist/index.html'));
 });
 
