@@ -147,13 +147,28 @@ export default function App() {
 
       <main className="main">
         {page === 'overview' && (
-          <Overview cache={cache} fmt={fmtC} onManageBudgets={() => setPage('budget')} onTxClick={openTxDetail} />
+          <Overview
+            cache={cache}
+            currentMonth={currentMonth}
+            payday={serverSettings.payday}
+            fmt={fmtC}
+            onManageBudgets={() => setPage('budget')}
+            onTxClick={openTxDetail}
+          />
         )}
         {page === 'transactions' && (
           <Transactions txs={cache.txs} budgets={cache.budgets} fmt={fmtC} onTxClick={openTxDetail} />
         )}
         {page === 'budget' && (
-          <Budget budgets={cache.budgets} stats={cache.stats} fmt={fmtC} onEdit={openAddBudget} onAdd={() => openAddBudget(null)} />
+          <Budget
+            budgets={cache.budgets}
+            stats={cache.stats}
+            currentMonth={currentMonth}
+            payday={serverSettings.payday}
+            fmt={fmtC}
+            onEdit={openAddBudget}
+            onAdd={() => openAddBudget(null)}
+          />
         )}
         {page === 'mappings' && (
           <Mappings budgets={cache.budgets} api={api} />

@@ -37,6 +37,27 @@ function formatRangeDate(date) {
   return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
+function isoDateToDayNumber(dateString) {
+  const [yearPart, monthPart, dayPart] = String(dateString || '').split('-')
+  const year = Number.parseInt(yearPart, 10)
+  const month = Number.parseInt(monthPart, 10)
+  const day = Number.parseInt(dayPart, 10)
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null
+  return Math.floor(Date.UTC(year, month - 1, day) / 86400000)
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value))
+}
+
+const PACE_STYLES = {
+  muted: { color: 'var(--muted)', label: 'Not started' },
+  green: { color: 'var(--green)', label: 'On pace' },
+  amber: { color: 'var(--amber)', label: 'A bit ahead of pace' },
+  orange: { color: 'var(--orange)', label: 'Well ahead of pace' },
+  red: { color: 'var(--red)', label: 'Over budget' }
+}
+
 export function fmt(n, currency) {
   return currency + ' ' + Math.round(Math.abs(n)).toLocaleString('nb-NO')
 }
@@ -65,7 +86,7 @@ export function getCurrentBudgetMonth(payday, now = new Date()) {
 export function getBudgetMonthMeta(month, payday) {
   const parsed = parseMonthValue(month)
   if (!parsed) {
-    return { value: month, label: month, shortLabel: month, rangeLabel: '' }
+    return { value: month, label: month, shortLabel: month, rangeLabel: '', startDate: null, endDate: null, dayCount: 0 }
   }
 
   const normalizedPayday = normalizePayday(payday)
@@ -84,7 +105,10 @@ export function getBudgetMonthMeta(month, payday) {
     value: formatMonthValue(year, monthIndex),
     label: new Date(year, monthIndex, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),
     shortLabel: new Date(year, monthIndex, 1).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }),
-    rangeLabel: `${formatRangeDate(start)} – ${formatRangeDate(end)}`
+    rangeLabel: `${formatRangeDate(start)} – ${formatRangeDate(end)}`,
+    startDate: formatIsoDate(start),
+    endDate: formatIsoDate(end),
+    dayCount: ((isoDateToDayNumber(formatIsoDate(end)) ?? 0) - (isoDateToDayNumber(formatIsoDate(start)) ?? 0)) + 1
   }
 }
 
@@ -96,4 +120,63 @@ export function buildBudgetMonthOptions(payday, count = 18, now = new Date()) {
     const date = new Date(current.year, current.monthIndex - index, 1)
     return getBudgetMonthMeta(formatMonthValue(date.getFullYear(), date.getMonth()), payday)
   })
+}
+
+export function compareBudgetMonths(leftMonth, rightMonth) {
+  const left = parseMonthValue(leftMonth)
+  const right = parseMonthValue(rightMonth)
+  if (!left || !right) return 0
+  return (left.year - right.year) * 12 + (left.monthIndex - right.monthIndex)
+}
+
+export function getBudgetPaceStatus({ month, payday, spent = 0, budget = 0, now = new Date() }) {
+  const currentMonth = getCurrentBudgetMonth(payday, now)
+  const relationDelta = compareBudgetMonths(month, currentMonth)
+  const relation = relationDelta < 0 ? 'past' : relationDelta > 0 ? 'future' : 'current'
+  const budgetAmount = Number.isFinite(budget) ? budget : 0
+  const spentAmount = Number.isFinite(spent) ? spent : 0
+  const spentRatio = budgetAmount > 0 ? spentAmount / budgetAmount : (spentAmount > 0 ? Infinity : 0)
+
+  if (budgetAmount <= 0) {
+    const severity = spentAmount > 0 ? 'red' : 'muted'
+    return { relation, severity, spentRatio, elapsedRatio: 0, ...PACE_STYLES[severity], label: spentAmount > 0 ? 'No budget set' : 'No activity yet' }
+  }
+
+  if (relation === 'past') {
+    const severity = spentRatio <= 1 ? 'green' : spentRatio <= 1.1 ? 'orange' : 'red'
+    const label = severity === 'green' ? 'Finished under budget' : severity === 'orange' ? 'Slightly over budget' : 'Over budget'
+    return { relation, severity, spentRatio, elapsedRatio: 1, ...PACE_STYLES[severity], label }
+  }
+
+  if (relation === 'future') {
+    const severity = spentRatio === 0 ? 'muted' : spentRatio < 1 ? 'amber' : 'red'
+    const label = severity === 'muted' ? 'Not started' : severity === 'amber' ? 'Spend already booked' : 'Over budget'
+    return { relation, severity, spentRatio, elapsedRatio: 0, ...PACE_STYLES[severity], label }
+  }
+
+  const meta = getBudgetMonthMeta(month, payday)
+  const currentDayNumber = isoDateToDayNumber(today(now))
+  const startDayNumber = isoDateToDayNumber(meta.startDate)
+  const elapsedDays = currentDayNumber != null && startDayNumber != null
+    ? clamp(currentDayNumber - startDayNumber + 1, 0, Math.max(meta.dayCount, 1))
+    : 0
+  const elapsedRatio = meta.dayCount > 0 ? elapsedDays / meta.dayCount : 0
+  const paceDelta = spentRatio - elapsedRatio
+
+  let severity = 'green'
+  if (spentRatio >= 1 || paceDelta > 0.30) severity = 'red'
+  else if (paceDelta > 0.15) severity = 'orange'
+  else if (paceDelta > 0.05) severity = 'amber'
+
+  const label = severity === 'green'
+    ? 'On pace'
+    : severity === 'amber'
+      ? 'A bit ahead of pace'
+      : severity === 'orange'
+        ? 'Well ahead of pace'
+        : spentRatio >= 1
+          ? 'Over budget'
+          : 'Far ahead of pace'
+
+  return { relation, severity, spentRatio, elapsedRatio, paceDelta, ...PACE_STYLES[severity], label }
 }
