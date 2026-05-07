@@ -23,7 +23,7 @@ export default function Transactions({ txs, budgets, fmt, onTxClick }) {
       </div>
       <div className="card" style={{ padding: '0 16px' }}>
         {filtered.length === 0
-          ? <div className="empty"><p>No transactions</p></div>
+          ? <div className="empty"><p>No transactions in this budget period</p></div>
           : filtered.map(t => <TxRow key={t.id} tx={t} budgets={budgets} fmt={fmt} onClick={() => onTxClick(t.id)} />)
         }
       </div>

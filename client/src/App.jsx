@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { fmt } from './utils'
+import { fmt, getBudgetMonthMeta, getCurrentBudgetMonth } from './utils'
 import Overview from './pages/Overview'
 import Transactions from './pages/Transactions'
 import Budget from './pages/Budget'
@@ -42,15 +42,18 @@ const NAV = [
 
 export default function App() {
   const [page, setPage] = useState('overview')
-  const [currentMonth, setCurrentMonth] = useState(() => new Date().toISOString().slice(0, 7))
+  const [currentMonth, setCurrentMonth] = useState(() => getCurrentBudgetMonth(1))
   const [cfg, setCfg] = useState(loadCfg)
   const [cache, setCache] = useState({ budgets: [], stats: null, txs: [] })
+  const [serverSettings, setServerSettings] = useState({ payday: 1 })
+  const [hasLoadedServerSettings, setHasLoadedServerSettings] = useState(false)
   const [overlay, setOverlay] = useState(null)
   const [editingTxId, setEditingTxId] = useState(null)
   const [editingBudId, setEditingBudId] = useState(null)
   const [detailTxId, setDetailTxId] = useState(null)
   const [toastMsg, setToastMsg] = useState('')
   const toastTimer = useRef()
+  const initialBudgetMonthResolved = useRef(false)
 
   const api = useCallback((path, opts = {}) => {
     const base = (cfg.serverUrl || '').replace(/\/$/, '')
@@ -76,21 +79,31 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [budgets, stats, txs] = await Promise.all([
+      const [budgets, stats, txs, settings] = await Promise.all([
         api('/api/budgets'),
         api('/api/stats/' + currentMonth),
-        api('/api/transactions?month=' + currentMonth)
+        api('/api/transactions?month=' + currentMonth),
+        api('/api/settings')
       ])
       setCache({ budgets, stats, txs })
+      setServerSettings(prev => ({ ...prev, ...settings }))
+      setHasLoadedServerSettings(true)
     } catch {}
   }, [api, currentMonth])
 
   useEffect(() => { refresh() }, [refresh])
 
-  const monthLabel = (() => {
-    const [y, m] = currentMonth.split('-')
-    return new Date(+y, +m - 1, 1).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
-  })()
+  useEffect(() => {
+    if (!hasLoadedServerSettings || initialBudgetMonthResolved.current) return
+    initialBudgetMonthResolved.current = true
+    const calendarMonth = getCurrentBudgetMonth(1)
+    if (currentMonth === calendarMonth) {
+      setCurrentMonth(getCurrentBudgetMonth(serverSettings.payday))
+    }
+  }, [currentMonth, hasLoadedServerSettings, serverSettings.payday])
+
+  const monthMeta = getBudgetMonthMeta(currentMonth, serverSettings.payday)
+  const monthLabel = monthMeta.shortLabel
 
   const fmtC = (n) => fmt(n, cfg.currency)
 
@@ -116,6 +129,13 @@ export default function App() {
     setOverlay('addBudget')
   }
 
+  function handleServerSettingsChange(nextSettings) {
+    setServerSettings(prev => ({ ...prev, ...nextSettings }))
+    if (Object.prototype.hasOwnProperty.call(nextSettings, 'payday')) {
+      setCurrentMonth(getCurrentBudgetMonth(nextSettings.payday))
+    }
+  }
+
   return (
     <div className="app">
       <nav className="top-nav">
@@ -139,7 +159,14 @@ export default function App() {
           <Mappings budgets={cache.budgets} api={api} />
         )}
         {page === 'settings' && (
-          <Settings cfg={cfg} saveSetting={saveSetting} api={api} toast={toast} />
+          <Settings
+            cfg={cfg}
+            saveSetting={saveSetting}
+            serverSettings={serverSettings}
+            onServerSettingsChange={handleServerSettingsChange}
+            api={api}
+            toast={toast}
+          />
         )}
       </main>
 
@@ -197,6 +224,7 @@ export default function App() {
       <MonthPickerSheet
         open={overlay === 'month'}
         currentMonth={currentMonth}
+        payday={serverSettings.payday}
         onSelect={m => { setCurrentMonth(m); setOverlay(null) }}
         onClose={() => setOverlay(null)}
       />

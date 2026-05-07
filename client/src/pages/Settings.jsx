@@ -1,36 +1,37 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { getBudgetMonthMeta, getCurrentBudgetMonth } from '../utils'
 
-export default function Settings({ cfg, saveSetting, api, toast }) {
+function formatOrdinal(value) {
+  const mod10 = value % 10
+  const mod100 = value % 100
+  if (mod10 === 1 && mod100 !== 11) return `${value}st`
+  if (mod10 === 2 && mod100 !== 12) return `${value}nd`
+  if (mod10 === 3 && mod100 !== 13) return `${value}rd`
+  return `${value}th`
+}
+
+export default function Settings({ cfg, saveSetting, serverSettings, onServerSettingsChange, api, toast }) {
   const [connErr, setConnErr] = useState(false)
-  const [serverSettings, setServerSettings] = useState({
+  const effectiveServerSettings = {
     ocr_provider: 'tesseract',
     available_ocr_providers: ['tesseract', 'google', 'ollama'],
     google_vision_configured: false,
-  })
+    payday: 1,
+    ...serverSettings,
+  }
+  const currentBudgetMonth = getBudgetMonthMeta(
+    getCurrentBudgetMonth(effectiveServerSettings.payday),
+    effectiveServerSettings.payday
+  )
   const buildLabel = [
-    serverSettings.app_version ? `Version ${serverSettings.app_version}` : null,
-    serverSettings.app_revision ? `build ${serverSettings.app_revision.slice(0, 7)}` : null,
+    effectiveServerSettings.app_version ? `Version ${effectiveServerSettings.app_version}` : null,
+    effectiveServerSettings.app_revision ? `build ${effectiveServerSettings.app_revision.slice(0, 7)}` : null,
   ].filter(Boolean).join(' · ')
-
-  useEffect(() => {
-    let ignore = false
-
-    async function loadServerSettings() {
-      try {
-        const settings = await api('/api/settings')
-        if (!ignore) setServerSettings(prev => ({ ...prev, ...settings }))
-      } catch {
-        if (!ignore) setConnErr(true)
-      }
-    }
-
-    loadServerSettings()
-    return () => { ignore = true }
-  }, [api])
 
   async function testConn() {
     try {
-      await api('/api/budgets')
+      const settings = await api('/api/settings')
+      onServerSettingsChange(settings)
       setConnErr(false)
       toast('Connected ✓')
     } catch {
@@ -44,7 +45,7 @@ export default function Settings({ cfg, saveSetting, api, toast }) {
         method: 'POST',
         body: JSON.stringify({ [key]: value })
       })
-      setServerSettings(prev => ({ ...prev, ...(res.settings || {}) }))
+      onServerSettingsChange(res.settings || {})
       setConnErr(false)
       toast('Saved')
     } catch {
@@ -74,27 +75,46 @@ export default function Settings({ cfg, saveSetting, api, toast }) {
         <div className="fg">
           <label>OCR provider</label>
           <select
-            value={serverSettings.ocr_provider}
+            value={effectiveServerSettings.ocr_provider}
             onChange={e => saveServerSetting('ocr_provider', e.target.value)}
           >
-            {serverSettings.available_ocr_providers.map(provider => (
+            {effectiveServerSettings.available_ocr_providers.map(provider => (
               <option
                 key={provider}
                 value={provider}
-                disabled={provider === 'google' && !serverSettings.google_vision_configured}
+                disabled={provider === 'google' && !effectiveServerSettings.google_vision_configured}
               >
                 {provider === 'tesseract' && 'Tesseract (local)'}
-                {provider === 'google' && `Google Vision${serverSettings.google_vision_configured ? '' : ' - add key on server first'}`}
+                {provider === 'google' && `Google Vision${effectiveServerSettings.google_vision_configured ? '' : ' - add key on server first'}`}
                 {provider === 'ollama' && 'Ollama'}
               </option>
             ))}
           </select>
         </div>
-        {!serverSettings.google_vision_configured && (
+        {!effectiveServerSettings.google_vision_configured && (
           <div className="ocr-tip">
             To enable Google Vision, set <code>GOOGLE_VISION_API_KEY</code> in the server container environment and redeploy.
           </div>
         )}
+      </div>
+      <div className="card">
+        <div className="card-title" style={{ marginBottom: 12 }}>Budget period</div>
+        <div className="fg">
+          <label>Payday</label>
+          <select
+            value={String(effectiveServerSettings.payday)}
+            onChange={e => saveServerSetting('payday', Number(e.target.value))}
+          >
+            {Array.from({ length: 31 }, (_, index) => index + 1).map(day => (
+              <option key={day} value={day}>{formatOrdinal(day)}</option>
+            ))}
+          </select>
+        </div>
+        <div className="ocr-tip">
+          Budget months run from the selected payday until the day before the next one.
+          {' '}
+          <strong>{currentBudgetMonth.label}</strong> currently means <strong>{currentBudgetMonth.rangeLabel}</strong>.
+        </div>
       </div>
       <div className="card">
         <div className="card-title" style={{ marginBottom: 12 }}>Display</div>

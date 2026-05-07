@@ -14,6 +14,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'budget.db');
 const RECEIPT_DIR = path.join(DATA_DIR, 'receipts');
 const OCR_PROVIDER_SETTING_KEY = 'ocr_provider';
+const PAYDAY_SETTING_KEY = 'payday';
 const APP_VERSION = (process.env.APP_VERSION || packageVersion || '').trim();
 const APP_REVISION = (process.env.APP_REVISION || '').trim();
 const APP_BUILD_DATE = (process.env.APP_BUILD_DATE || '').trim();
@@ -129,7 +130,12 @@ app.get('/api/transactions', (req, res) => {
   const { month, type } = req.query;
   let query = 'SELECT * FROM transactions WHERE 1=1';
   const params = [];
-  if (month) { query += ' AND date LIKE ?'; params.push(month + '%'); }
+  if (month) {
+    const range = getBudgetMonthRange(month);
+    if (!range) return res.status(400).json({ error: 'Invalid month' });
+    query += ' AND date >= ? AND date < ?';
+    params.push(range.start, range.endExclusive);
+  }
   if (type)  { query += ' AND type = ?'; params.push(type); }
   query += ' ORDER BY date DESC, created_at DESC';
   res.json(db.prepare(query).all(...params));
@@ -345,6 +351,51 @@ function getSettingValue(key) {
   return row?.value ?? null;
 }
 
+function parsePayday(value) {
+  const parsed = Number.parseInt(String(value ?? '').trim(), 10);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 31) return null;
+  return parsed;
+}
+
+function getPaydaySetting() {
+  return parsePayday(getSettingValue(PAYDAY_SETTING_KEY)) ?? 1;
+}
+
+function daysInMonthUtc(year, monthIndex) {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+}
+
+function createUtcDate(year, monthIndex, day) {
+  return new Date(Date.UTC(year, monthIndex, day));
+}
+
+function formatIsoDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function getBudgetMonthRange(month, payday = getPaydaySetting()) {
+  if (!/^\d{4}-\d{2}$/.test(month || '')) return null;
+
+  const [yearPart, monthPart] = month.split('-');
+  const year = Number.parseInt(yearPart, 10);
+  const monthIndex = Number.parseInt(monthPart, 10) - 1;
+  if (!Number.isInteger(year) || monthIndex < 0 || monthIndex > 11) return null;
+
+  const start = createUtcDate(year, monthIndex, Math.min(payday, daysInMonthUtc(year, monthIndex)));
+  const nextYear = monthIndex === 11 ? year + 1 : year;
+  const nextMonthIndex = monthIndex === 11 ? 0 : monthIndex + 1;
+  const endExclusive = createUtcDate(
+    nextYear,
+    nextMonthIndex,
+    Math.min(payday, daysInMonthUtc(nextYear, nextMonthIndex))
+  );
+
+  return {
+    start: formatIsoDate(start),
+    endExclusive: formatIsoDate(endExclusive)
+  };
+}
+
 function getCurrentOcrProvider() {
   const configured = getSettingValue(OCR_PROVIDER_SETTING_KEY) || ocr.defaultProvider;
   try {
@@ -360,6 +411,7 @@ function buildSettingsResponse() {
   rows.forEach(r => out[r.key] = r.value);
 
   out.ocr_provider = getCurrentOcrProvider();
+  out.payday = getPaydaySetting();
   out.available_ocr_providers = ocr.listProviders();
   out.google_vision_configured = Boolean(process.env.GOOGLE_VISION_API_KEY);
   out.ollama_configured = Boolean(process.env.OLLAMA_BASE_URL);
@@ -567,20 +619,34 @@ app.get('/api/settings', (req, res) => {
 
 app.post('/api/settings', (req, res) => {
   const stmt = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
+  const entries = [];
   for (const [key, value] of Object.entries(req.body)) {
     if (key === OCR_PROVIDER_SETTING_KEY) {
-      stmt.run(key, ocr.normalizeProviderName(value));
+      entries.push([key, ocr.normalizeProviderName(value)]);
       continue;
     }
-    stmt.run(key, value);
+    if (key === PAYDAY_SETTING_KEY) {
+      const payday = parsePayday(value);
+      if (payday === null) {
+        return res.status(400).json({ error: 'Payday must be between 1 and 31' });
+      }
+      entries.push([key, String(payday)]);
+      continue;
+    }
+    entries.push([key, value]);
   }
+
+  entries.forEach(([key, value]) => stmt.run(key, value));
   res.json({ ok: true, settings: buildSettingsResponse() });
 });
 
 // ===== STATS =====
 app.get('/api/stats/:month', (req, res) => {
   const month = req.params.month;
-  const txs = db.prepare("SELECT * FROM transactions WHERE date LIKE ?").all(month + '%');
+  const range = getBudgetMonthRange(month);
+  if (!range) return res.status(400).json({ error: 'Invalid month' });
+
+  const txs = db.prepare('SELECT * FROM transactions WHERE date >= ? AND date < ?').all(range.start, range.endExclusive);
   const budgets = db.prepare('SELECT * FROM budgets ORDER BY sort_order').all();
 
   const expenses = txs.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);

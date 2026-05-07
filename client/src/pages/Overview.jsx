@@ -65,7 +65,7 @@ export default function Overview({ cache, fmt, onManageBudgets, onTxClick }) {
       <div className="sec">Recent</div>
       <div className="card" style={{ padding: '0 16px' }}>
         {recent.length === 0
-          ? <div className="empty"><p>No transactions this month</p></div>
+          ? <div className="empty"><p>No transactions in this budget period</p></div>
           : recent.map(t => <TxRow key={t.id} tx={t} budgets={budgets} fmt={fmt} onClick={() => onTxClick(t.id)} />)
         }
       </div>
