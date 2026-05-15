@@ -2,6 +2,10 @@
 
 Self-hosted budget tracker with a React/Vite frontend, an Express + SQLite backend, and OCR support for receipt imports.
 
+<img width="603" height="1311" alt="IMG_3093" src="https://github.com/user-attachments/assets/70647faf-e456-4804-b006-8c60ab71ff5e" />
+<img width="720" height="1566" alt="ScreenRecording_05-15-202611-31-42_1online-video-cutter com-ezgif com-video-to-gif-converter" src="https://github.com/user-attachments/assets/b49e7570-9da3-45a2-b7a5-c4202c41b2c1" />
+
+
 ## Stack
 
 - **Frontend**: React + Vite
